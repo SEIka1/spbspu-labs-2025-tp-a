@@ -1,83 +1,180 @@
 #include "data-struct.hpp"
-#include "delimiter.hpp"
-#include "io-helpers.hpp"
-#include "stream-guard.hpp"
+#include <iomanip>
+#include <cmath>
+#include <limits>
+
+elagin::FormatGuard::FormatGuard(std::basic_ios<char>& s):
+  s_(s),
+  fmt_(s.flags()),
+  precision_(s.precision()),
+  fill_(s.fill())
+{}
+
+elagin::FormatGuard::~FormatGuard()
+{
+  s_.fill(fill_);
+  s_.precision(precision_);
+  s_.flags(fmt_);
+}
 
 bool elagin::operator<(const DataStruct& lhs, const DataStruct& rhs)
 {
-  if (lhs.key1 != rhs.key1) {
+  if (lhs.key1 != rhs.key1)
+  {
     return lhs.key1 < rhs.key1;
   }
-  if (std::abs(lhs.key2.real() - rhs.key2.real()) > 1e-6) {
-    return lhs.key2.real() < rhs.key2.real();
+  double modLhs = std::abs(lhs.key2);
+  double modRhs = std::abs(rhs.key2);
+  if (std::abs(modLhs - modRhs) > 1e-10)
+  {
+    return modLhs < modRhs;
   }
-  if (std::abs(lhs.key2.imag() - rhs.key2.imag()) > 1e-6) {
-    return lhs.key2.imag() < rhs.key2.imag();
-  }
-  return lhs.key3.size() < rhs.key3.size();
+  return lhs.key3.length() < rhs.key3.length();
 }
 
-std::istream& elagin::operator>>(std::istream& in, DataStruct& dst)
+std::istream& elagin::operator>>(std::istream& in, DelimiterValue&& dest)
 {
   std::istream::sentry sentry(in);
-  if (!sentry) {
+  if (!sentry)
+  {
+    return in;
+  }
+  char current;
+  in >> current;
+  if (in && (current != dest.exp))
+  {
+    in.setstate(std::ios::failbit);
+  }
+  return in;
+}
+
+std::istream& elagin::operator>>(std::istream& in, HexValue&& dest)
+{
+  std::istream::sentry sentry(in);
+  if (!sentry)
+  {
+    return in;
+  }
+  FormatGuard guard(in);
+  in >> DelimiterValue{'0'} >> DelimiterValue{'x'};
+  in >> std::hex >> dest.ref;
+  return in;
+}
+
+std::istream& elagin::operator>>(std::istream& in, ComplexValue&& dest)
+{
+  std::istream::sentry sentry(in);
+  if (!sentry)
+  {
+    return in;
+  }
+  in >> DelimiterValue{'#'} >> DelimiterValue{'c'} >> DelimiterValue{'('};
+  double real = 0.0, imag = 0.0;
+  in >> real >> imag >> DelimiterValue{')'};
+  if (in)
+  {
+    dest.ref = std::complex<double>(real, imag);
+  }
+  return in;
+}
+
+std::istream& elagin::operator>>(std::istream& in, StringValue&& dest)
+{
+  std::istream::sentry sentry(in);
+  if (!sentry)
+  {
+    return in;
+  }
+  in >> DelimiterValue{'"'};
+  std::getline(in, dest.ref, '"');
+  return in;
+}
+
+std::istream& elagin::operator>>(std::istream& in, DataStruct& dest)
+{
+  std::istream::sentry sentry(in);
+  if (!sentry)
+  {
     return in;
   }
 
-  DataStruct temp{};
-  bool hasKey1 = false;
-  bool hasKey2 = false;
-  bool hasKey3 = false;
+  DataStruct input;
+  using sep = DelimiterValue;
+  using hex = HexValue;
+  using cmp = ComplexValue;
+  using str = StringValue;
 
-  in >> DelimiterIO{'('};
-  for (int i = 0; i < 3; ++i) {
-    in >> DelimiterIO{':'} >> DelimiterIO{'k'}
-    >> DelimiterIO{'e'} >> DelimiterIO{'y'};
+  in >> sep{'('};
 
-    int keyNum = 0;
-    in >> keyNum;
+  size_t keysRead = 0;
+  bool key1Read = false, key2Read = false, key3Read = false;
 
-    if (keyNum == 1 && !hasKey1) {
-      in >> HexIOIn{temp.key1};
-      hasKey1 = true;
+  while (keysRead < 3 && in)
+  {
+    std::string key;
+    in >> sep{':'} >> key;
+
+    if (key == "key1")
+    {
+      if (key1Read)
+      {
+        in.setstate(std::ios::failbit);
+        break;
+      }
+      in >> hex{input.key1};
+      key1Read = true;
+      keysRead++;
     }
-    else if (keyNum == 2 && !hasKey2) {
-      in >> ComplexIOIn{temp.key2};
-      hasKey2 = true;
+    else if (key == "key2")
+    {
+      if (key2Read)
+      {
+        in.setstate(std::ios::failbit);
+        break;
+      }
+      in >> cmp{input.key2};
+      key2Read = true;
+      keysRead++;
     }
-    else if (keyNum == 3 && !hasKey3) {
-      in >> StringIO{temp.key3};
-      hasKey3 = true;
+    else if (key == "key3")
+    {
+      if (key3Read)
+      {
+        in.setstate(std::ios::failbit);
+        break;
+      }
+      in >> str{input.key3};
+      key3Read = true;
+      keysRead++;
     }
-    else {
+    else
+    {
       in.setstate(std::ios::failbit);
-      return in;
+      break;
     }
   }
 
-  in >> DelimiterIO{':'} >> DelimiterIO{')'};
-
-  if (in && hasKey1 && hasKey2 && hasKey3) {
-    dst = temp;
-  }
-  else {
-    in.setstate(std::ios::failbit);
+  if (in)
+  {
+    in >> sep{':'} >> sep{')'};
+    dest = input;
   }
 
   return in;
 }
 
-std::ostream& elagin::operator<<(std::ostream& out, const DataStruct& dst)
+std::ostream& elagin::operator<<(std::ostream& out, const DataStruct& src)
 {
   std::ostream::sentry sentry(out);
-  if (!sentry) {
+  if (!sentry)
+  {
     return out;
   }
 
-  StreamGuard guard(out);
-  out << "(:key1 " << HexIOOut{dst.key1}
-  << ":key2 " << ComplexIOOut{dst.key2}
-  << ":key3 \"" << dst.key3 << "\":)";
-
+  FormatGuard guard(out);
+  out << "(:key1 0x" << std::hex << std::uppercase << src.key1;
+  out << ":key2 #c(" << std::fixed << std::setprecision(1);
+  out << src.key2.real() << " " << src.key2.imag() << ")";
+  out << ":key3 \"" << src.key3 << "\":)";
   return out;
 }
